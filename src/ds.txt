@@ -1,0 +1,298 @@
+import React, { useState, useEffect } from 'react';
+import { db } from './firebaseConfig';
+import { collection, query, orderBy, onSnapshot, where, deleteDoc } from 'firebase/firestore';
+import { Line } from 'react-chartjs-2';
+import { Chart, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js';
+import './App.css';
+
+// Register Chart.js components
+Chart.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
+
+function calculateCorrelation(data1, data2) {
+  let sumXY = 0;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXSquare = 0;
+  let sumYSquare = 0;
+
+  const n = data1.length;
+
+  for (let i = 0; i < n; i++) {
+    sumXY += data1[i].y * data2[i].y;
+    sumX += data1[i].y;
+    sumY += data2[i].y;
+    sumXSquare += Math.pow(data1[i].y, 2);
+    sumYSquare += Math.pow(data2[i].y, 2);
+  }
+
+  const correlation =
+    (n * sumXY - sumX * sumY) /
+    Math.sqrt((n * sumXSquare - Math.pow(sumX, 2)) * (n * sumYSquare - Math.pow(sumY, 2)));
+
+  return correlation;
+}
+
+function calculateRiskLevel(sp02, bpm) {
+  const bpmDiff = Math.abs(bpm - 80);
+  const riskScore = (100 - sp02) + (bpmDiff / 40);
+
+  if (riskScore < 6) {
+    return 'Low Risk';
+  } else if (riskScore >= 6 && riskScore <= 16) {
+    return 'Moderate Risk';
+  } else {
+    return 'High Risk';
+  }
+}
+
+
+function App() {
+  const [bpmData, setBpmData] = useState([]);
+  const [sp02Data, setSp02Data] = useState([]);
+  const [correlation, setCorrelation] = useState(null);
+  const [latestReading, setLatestReading] = useState(null);
+  const [riskLevel, setRiskLevel] = useState(null);
+
+  useEffect(() => {
+    const q = query(collection(db, 'sensor_readings'), orderBy('reading_num', 'asc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const newBpmData = [];
+      const newSp02Data = [];
+      let latest = null;
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        if (data.bpm !== 0 && data.sp02 !== 0 && 
+          data.bpm >= 20 && data.bpm <= 140 && 
+          data.sp02 >= 60 && data.sp02 <= 100) {
+                newBpmData.push({ x: data.reading_num, y: data.bpm });
+                newSp02Data.push({ x: data.reading_num, y: data.sp02 });
+      }else {
+          deleteDoc(doc.ref);
+        }
+        if (!latest || data.reading_num > latest.reading_num) {
+          latest = data;
+        }
+      });
+
+      setBpmData(newBpmData);
+      setSp02Data(newSp02Data);
+      setLatestReading(latest);
+
+      if (latest) {
+        const { sp02, bpm } = latest;
+        const risk = calculateRiskLevel(sp02, bpm);
+        setRiskLevel(risk);
+      }
+
+      // Calculate correlation between BPM and SpO2 data
+      const correlationValue = calculateCorrelation(newBpmData, newSp02Data);
+      setCorrelation(correlationValue);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const bpmChartData = {
+    datasets: [
+      {
+        label: 'BPM',
+        data: bpmData,
+        borderColor: 'rgba(75,192,192,1)',
+        backgroundColor: 'rgba(75,192,192,0.2)',
+        fill: true,
+      },
+    ],
+    labels: bpmData.map((item) => item.x),
+  };
+
+  const sp02ChartData = {
+    datasets: [
+      {
+        label: 'SpO2',
+        data: sp02Data,
+        borderColor: 'rgba(153,102,255,1)',
+        backgroundColor: 'rgba(153,102,255,0.2)',
+        fill: true,
+      },
+    ],
+    labels: sp02Data.map((item) => item.x),
+  };
+
+  return (
+    <div className="container">
+      <div className="risk-indicator">
+        <h2>Risk Indicator</h2>
+        {latestReading && (
+          <div>
+            <p>Timestamp: {latestReading.timestamp}</p>
+            <p>BPM: {latestReading.bpm}</p>
+            <p>SpO2: {latestReading.sp02}</p>
+            <p>Risk Level: <span style={{ color: riskLevel === 'Low Risk' ? 'green' : riskLevel === 'Moderate Risk' ? 'orange' : 'red' }}>{riskLevel}</span></p>
+          </div>
+        )}
+      </div>
+      <div className="chart-container">
+        <h2 className="chart-title">BPM Chart</h2>
+        <Line className="line-chart" data={bpmChartData} height={200} width={300} />
+      </div>
+      <div className="chart-container">
+        <h2 className="chart-title">SpO2 Chart</h2>
+        <Line className="line-chart" data={sp02ChartData} height={200} width={300} />
+      </div>
+      <div className="analytics-container">
+        <h2 className="analytics-title">Analytics</h2>
+        <p className="correlation-value">Correlation between BPM and SpO2: {correlation}</p>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+
+
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #121212;
+  color: #e0e0e0;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 80%;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.risk-indicator {
+  flex: 1 1 100%;
+  background-color: #2c2c2c;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.risk-indicator:hover {
+  transform: translateY(-5px);
+}
+
+.risk-indicator h2 {
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.risk-indicator p {
+  font-size: 1rem;
+  color: #ccc;
+}
+
+.chart-container {
+  flex: 1 1 50%;
+  background-color: #2c2c2c;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.chart-container:hover {
+  transform: translateY(-5px);
+}
+
+.chart-title {
+  font-size: 1.2rem;
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.line-chart {
+  width: 50%;
+  height: 40%;
+}
+
+.analytics-container {
+  flex: 1 1 100%;
+  background-color: #2c2c2c;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.analytics-container:hover {
+  transform: translateY(-5px);
+}
+
+.analytics-title {
+  font-size: 1.2rem;
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.descriptive-stats {
+  margin-bottom: 20px;
+}
+
+.descriptive-stats table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.descriptive-stats th {
+  background-color: #333;
+  color: #fff;
+  padding: 10px;
+  border-bottom: 1px solid #ddd;
+}
+
+.descriptive-stats td {
+  padding: 10px;
+  border-bottom: 1px solid #ddd;
+}
+
+.data-distribution {
+  margin-bottom: 20px;
+}
+
+.data-distribution h4 {
+  margin-top: 0;
+}
+
+.trend-analysis {
+  margin-bottom: 20px;
+}
+
+.trend-analysis h4 {
+  margin-top: 0;
+}
+
+.frequency-analysis {
+  margin-bottom: 20px;
+}
+
+.frequency-analysis h4 {
+  margin-top: 0;
+}
+
+.peak-valley-detection {
+  margin-bottom: 20px;
+}
+
+.peak-valley-detection h4 {
+  margin-top: 0;
+}
+
+.anomaly-detection {
+  margin-bottom: 20px;
+}
+
+.anomaly-detection h4 {
+  margin-top: 0;
+}
